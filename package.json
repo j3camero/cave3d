@@ -19,6 +19,7 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "browserify": "^17.0.1",
     "express": "^5.2.1",
     "simplex-noise": "^4.0.3"
   }
