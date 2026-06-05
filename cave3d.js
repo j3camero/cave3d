@@ -137,7 +137,7 @@ function DoFrame() {
             continue;
         }
         const dot = DotProductNormalized(p.dx, p.dy, p.dz, -px, -py, -pz);
-        const light = 1 + Math.abs(dot);
+        const light = 1 + 0.2 * Math.abs(dot);
         const radius = Math.min(2, light * globalBrightness / distance);
         const red = Math.floor(255 * (p.dx + 1) / 2);
         const green = Math.floor(255 * (p.dy + 1) / 2);
