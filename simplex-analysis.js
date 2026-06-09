@@ -17,10 +17,16 @@ function Steepness(x, y, z) {
     return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+function ToUniform(noiseVal) {
+    const flattened = 0.5 + 0.5 * (1.85 * noiseVal - 0.85 * Math.pow(noiseVal, 5));
+    return Math.max(0.0001, Math.min(0.9999, flattened)); // Clamp slightly away from 0 and 1 to prevent infinity
+}
+
 for (let i = 0; i < 1000; i++) {
-    const x = Math.random() * 100;
-    const y = Math.random() * 100;
-    const z = Math.random() * 100;
-    const s = Steepness(x, y, z);
-    console.log(s);
+    const x = Math.random() * 1000;
+    const y = Math.random() * 1000;
+    const z = Math.random() * 1000;
+    //const s = Steepness(x, y, z);
+    const h = noise3D(x, y, z);
+    console.log(ToUniform(h));
 }
