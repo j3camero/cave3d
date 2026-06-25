@@ -97,7 +97,7 @@ fn noise3(x: f32, y: f32, z: f32) -> f32 {
 fn density(p: vec3<f32>) -> f32 { return noise3(p.x, p.y, p.z); }
 
 fn surfaceNormal(p: vec3<f32>) -> vec3<f32> {
-    let e = 0.01;
+    let e = 0.001;
     let h = density(p);
     return vec3<f32>(
         (density(p + vec3<f32>(e, 0.0, 0.0)) - h) / e,
@@ -158,9 +158,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ndcY    = (f32(py) - uni.rh * 0.5) / (minDim * 0.5);
     let rayDir  = normalize(vec3<f32>(ndcX, ndcY, 1.0));
 
-    var pos  = vec3<f32>(uni.cameraX, uni.cameraY, uni.cameraZ);
-    var oldH = density(pos);
-    var col  = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    let origin = vec3<f32>(uni.cameraX, uni.cameraY, uni.cameraZ);
+    var pos    = origin;
+    var oldH   = density(pos);
+    var col    = vec4<f32>(0.0, 0.0, 0.0, 1.0);
 
     for (var i = 0; i < 200; i++) {
         let h        = density(pos);
@@ -171,13 +172,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // Newton-Raphson refinement toward the zero crossing
             for (var j = 0; j < 8; j++) {
                 let nh  = density(pos);
-                let e   = 0.01;
+                let e   = 0.001;
                 let dh  = (density(pos + rayDir * e) - nh) / e;
                 if (abs(dh) < 1e-6) { break; }
                 pos -= rayDir * (nh / dh);
             }
-            let normal = normalize(surfaceNormal(pos));
-            col = vec4<f32>(normalToRainbow(normal), 1.0);
+            let dist       = length(pos - origin);
+            let brightness = 1.0 / (1.0 + dist * dist);
+            let normal     = normalize(surfaceNormal(pos));
+            col = vec4<f32>(normalToRainbow(normal) * brightness, 1.0);
             break;
         }
         oldH = h;
@@ -339,7 +342,7 @@ async function main() {
 
         const sec = Math.floor(time / 1000);
         if (sec !== lastFpsSec) {
-            overlay.textContent = `${fpsCount} fps  |  render ${renderW}×${renderH}  |  scale ${RENDER_SCALE}`;
+            overlay.textContent = `${fpsCount} fps`;
             fpsCount   = 0;
             lastFpsSec = sec;
         }
