@@ -1,16 +1,11 @@
-// Render at half display resolution; increase toward 1.0 once FPS is known
 const RENDER_SCALE = 1.0;
 
 const COMPUTE_SHADER = /* wgsl */`
 struct Uniforms {
-    cameraX   : f32,
-    cameraY   : f32,
-    cameraZ   : f32,
-    rw        : f32,
-    rh        : f32,
-    pad0      : f32,
-    pad1      : f32,
-    pad2      : f32,
+    camPos   : vec4<f32>,  // xyz = position,     w = unused
+    camRight : vec4<f32>,  // xyz = right vector,  w = viewport width
+    camUp    : vec4<f32>,  // xyz = up vector,     w = viewport height
+    camFwd   : vec4<f32>,  // xyz = forward vector, w = unused
 };
 
 @group(0) @binding(0) var<uniform>          uni  : Uniforms;
@@ -97,19 +92,13 @@ fn noise3(x: f32, y: f32, z: f32) -> f32 {
 fn density(p: vec3<f32>) -> f32 { return noise3(p.x, p.y, p.z); }
 
 fn rockColor(p: vec3<f32>) -> vec3<f32> {
-    // Three octaves of texture noise at frequencies much higher than the cave shape.
-    // Shape noise is at freq ~1.0; texture uses 6x–40x to get rocky grain.
     let n1 = noise3(p.x *  6.0,          p.y *  6.0,          p.z *  6.0);
     let n2 = noise3(p.x * 16.0 + 17.3,   p.y * 16.0 + 31.1,   p.z * 16.0 +  7.7);
     let n3 = noise3(p.x * 40.0 + 53.7,   p.y * 40.0 + 61.3,   p.z * 40.0 + 41.9);
 
-    // FBM-style blend mapped to [0,1] for base lightness
     let t = clamp((n1 * 0.50 + n2 * 0.32 + n3 * 0.18) * 0.7 + 0.5, 0.0, 1.0);
-
-    // Second independent channel (large coordinate offset) drives mineral-patch color
     let m = clamp(noise3(p.x * 7.0 + 100.0, p.y * 7.0 + 200.0, p.z * 7.0 + 150.0) * 0.5 + 0.5, 0.0, 1.0);
 
-    // Earthy rock palette
     let black     = vec3<f32>(0.05, 0.04, 0.04);
     let darkGray  = vec3<f32>(0.20, 0.18, 0.17);
     let coolGray  = vec3<f32>(0.40, 0.37, 0.34);
@@ -119,7 +108,6 @@ fn rockColor(p: vec3<f32>) -> vec3<f32> {
     let sandstone = vec3<f32>(0.68, 0.56, 0.40);
     let limestone = vec3<f32>(0.84, 0.81, 0.76);
 
-    // Base: gradient through grays from dark crevices to pale highlights
     var base: vec3<f32>;
     if (t < 0.20) {
         base = mix(black,    darkGray, t * 5.0);
@@ -131,7 +119,6 @@ fn rockColor(p: vec3<f32>) -> vec3<f32> {
         base = mix(warmGray, limestone, (t - 0.78) * 4.55);
     }
 
-    // Mineral patches: earthy browns, ochres, sandstone
     var mineral: vec3<f32>;
     if (m < 0.40) {
         mineral = mix(brown,     ochre,     m * 2.5);
@@ -141,7 +128,6 @@ fn rockColor(p: vec3<f32>) -> vec3<f32> {
         mineral = mix(sandstone, limestone, (m - 0.70) * 3.33);
     }
 
-    // Patch extent driven by a low-frequency noise blob
     let patchNoise = noise3(p.x * 4.0 + 300.0, p.y * 4.0 + 400.0, p.z * 4.0 + 350.0);
     let mineralWeight = clamp(patchNoise * 0.5 + 0.35, 0.0, 0.70);
     return mix(base, mineral, mineralWeight);
@@ -152,14 +138,19 @@ fn rockColor(p: vec3<f32>) -> vec3<f32> {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let px = gid.x;
     let py = gid.y;
-    if (px >= u32(uni.rw) || py >= u32(uni.rh)) { return; }
+    let rw = uni.camRight.w;
+    let rh = uni.camUp.w;
+    if (px >= u32(rw) || py >= u32(rh)) { return; }
 
-    let minDim  = min(uni.rw, uni.rh);
-    let ndcX    = (f32(px) - uni.rw * 0.5) / (minDim * 0.5);
-    let ndcY    = (f32(py) - uni.rh * 0.5) / (minDim * 0.5);
-    let rayDir  = normalize(vec3<f32>(ndcX, ndcY, 1.0));
+    let minDim  = min(rw, rh);
+    let ndcX    = (f32(px) - rw * 0.5) / (minDim * 0.5);
+    let ndcY    = (f32(py) - rh * 0.5) / (minDim * 0.5);
 
-    let origin = vec3<f32>(uni.cameraX, uni.cameraY, uni.cameraZ);
+    // Combine screen-space NDC with camera orientation basis vectors.
+    // Negate ndcY so screen-top corresponds to the camera's up direction.
+    let rayDir  = normalize(uni.camRight.xyz * ndcX + uni.camUp.xyz * (-ndcY) + uni.camFwd.xyz);
+
+    let origin = uni.camPos.xyz;
     var pos    = origin;
     var oldH   = density(pos);
     var col    = vec4<f32>(0.0, 0.0, 0.0, 1.0);
@@ -170,7 +161,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         pos         += rayDir * stepSize;
 
         if (h * oldH < 0.0) {
-            // Newton-Raphson refinement toward the zero crossing
             for (var j = 0; j < 8; j++) {
                 let nh  = density(pos);
                 let e   = 0.001;
@@ -200,13 +190,11 @@ struct VSOut {
 
 @vertex
 fn vs(@builtin(vertex_index) vid: u32) -> VSOut {
-    // Full-screen triangle covering clip space
     var p = array<vec2<f32>, 3>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>( 3.0, -1.0),
         vec2<f32>(-1.0,  3.0)
     );
-    // UV: map NDC (-1,-1)..(1,1) to texture (0,1)..(1,0) — v flipped for screen-top = tex-top
     var u = array<vec2<f32>, 3>(
         vec2<f32>(0.0, 1.0),
         vec2<f32>(2.0, 1.0),
@@ -227,6 +215,49 @@ fn fs(in: VSOut) -> @location(0) vec4<f32> {
 }
 `;
 
+// --- Vector math helpers ---
+
+function norm3(v) {
+    const len = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+    return [v[0]/len, v[1]/len, v[2]/len];
+}
+
+function cross3(a, b) {
+    return [
+        a[1]*b[2] - a[2]*b[1],
+        a[2]*b[0] - a[0]*b[2],
+        a[0]*b[1] - a[1]*b[0],
+    ];
+}
+
+function dot3(a, b) {
+    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+}
+
+// Rodrigues' rotation: rotate `vec` around unit `axis` by `angle` radians.
+function rotateAround(vec, axis, angle) {
+    const c = Math.cos(angle), s = Math.sin(angle);
+    const d = dot3(axis, vec);
+    const cr = cross3(axis, vec);
+    return [
+        vec[0]*c + cr[0]*s + axis[0]*d*(1-c),
+        vec[1]*c + cr[1]*s + axis[1]*d*(1-c),
+        vec[2]*c + cr[2]*s + axis[2]*d*(1-c),
+    ];
+}
+
+function applyDeadzone(v, dz) {
+    return Math.abs(v) < dz ? 0 : (v - Math.sign(v)*dz) / (1 - dz);
+}
+
+// --- Physics constants ---
+const TOP_SPEED      = 0.0001;  // world units / ms  (~0.1 unit/sec)
+const DRAG_COEFF     = 0.002;   // per ms — half-life ~347 ms with no thrust
+const PITCH_RATE     = 0.0012;  // rad / ms at full stick deflection
+const ROLL_TOP_RATE  = 0.0015;  // rad / ms terminal roll rate at full stick
+const ROLL_DRAG_COEFF = 0.002;  // per ms — roll momentum half-life ~347 ms
+const DEADZONE       = 0.12;
+
 async function main() {
     const overlay = document.getElementById('overlay');
 
@@ -246,13 +277,14 @@ async function main() {
     const fmt    = navigator.gpu.getPreferredCanvasFormat();
     ctx.configure({ device, format: fmt, alphaMode: 'opaque' });
 
-    // Camera — keep coordinates modest so float32 stays precise
-    const cameraX   = Math.random() * 100;
-    const cameraY   = Math.random() * 100;
-    let   cameraZ   = Math.random() * 900;
-    const cameraSpeed = 0.000002; // world units per millisecond
+    // Camera state
+    let pos      = [Math.random() * 100, Math.random() * 100, Math.random() * 900];
+    let vel      = [0, 0, 0];
+    let right    = [1, 0, 0];
+    let up       = [0, 1, 0];
+    let fwd      = [0, 0, 1];
+    let rollRate = 0;  // current angular velocity around fwd axis, rad/ms
 
-    // Permutation table matching simplex-noise library seeding
     function buildPerm() {
         const p = new Uint8Array(512);
         for (let i = 0; i < 256; i++) p[i] = i;
@@ -270,13 +302,12 @@ async function main() {
     device.queue.writeBuffer(permBuf, 0, new Uint32Array(buildPerm()));
 
     const uniBuf = device.createBuffer({
-        size: 32,
+        size: 64,  // four vec4<f32>
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
     const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
-    // Pipelines
     const computeMod = device.createShaderModule({ code: COMPUTE_SHADER });
     const blitMod    = device.createShaderModule({ code: BLIT_SHADER });
 
@@ -301,11 +332,11 @@ async function main() {
         primitive: { topology: 'triangle-list' },
     });
 
-    let renderTex      = null;
-    let computeBG      = null;
-    let blitBG         = null;
-    let renderW        = 0;
-    let renderH        = 0;
+    let renderTex = null;
+    let computeBG = null;
+    let blitBG    = null;
+    let renderW   = 0;
+    let renderH   = 0;
 
     function resize() {
         canvas.width  = window.innerWidth;
@@ -332,40 +363,89 @@ async function main() {
     window.addEventListener('resize', resize);
     resize();
 
-    let lastTime = 0;
-    let fpsCount = 0;
+    let lastTime   = 0;
+    let fpsCount   = 0;
     let lastFpsSec = 0;
 
     function frame(time) {
         const dt = lastTime > 0 ? time - lastTime : 0;
-        lastTime  = time;
-        cameraZ  += dt * cameraSpeed;
+        lastTime = time;
         fpsCount++;
 
+        // --- Gamepad input ---
+        const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+        let gp = null;
+        for (const g of gamepads) if (g) { gp = g; break; }
+
+        let stickX = 0, stickY = 0, rightTrigger = 0;
+        if (gp) {
+            stickX       = applyDeadzone(gp.axes[0] ?? 0, DEADZONE);
+            stickY       = applyDeadzone(gp.axes[1] ?? 0, DEADZONE);
+            rightTrigger = gp.buttons[7] ? gp.buttons[7].value : 0;
+        }
+
+        // --- Orientation update ---
+        // Pitch: left stick Y — negated so stick forward (axes[1]=+1) = nose up.
+        if (stickY !== 0 && dt > 0) {
+            const a = -stickY * PITCH_RATE * dt;
+            fwd = rotateAround(fwd, right, a);
+            up  = rotateAround(up,  right, a);
+        }
+
+        // Roll: momentum-based. Stick X accelerates roll rate; drag decays it.
+        // Terminal roll rate at full deflection equals ROLL_TOP_RATE.
+        rollRate += -stickX * ROLL_TOP_RATE * ROLL_DRAG_COEFF * dt;
+        rollRate *= Math.exp(-ROLL_DRAG_COEFF * dt);
+        if (dt > 0) {
+            const a = rollRate * dt;
+            right = rotateAround(right, fwd, a);
+            up    = rotateAround(up,    fwd, a);
+        }
+
+        // Gram-Schmidt re-orthogonalization each frame to prevent floating-point drift.
+        fwd   = norm3(fwd);
+        const rdotf = dot3(right, fwd);
+        right = norm3([right[0]-rdotf*fwd[0], right[1]-rdotf*fwd[1], right[2]-rdotf*fwd[2]]);
+        up    = cross3(fwd, right);  // guaranteed orthonormal, no normalize needed
+
+        // --- Thrust and drag ---
+        // Terminal velocity equals TOP_SPEED at full trigger: thrust_max = DRAG * TOP_SPEED.
+        const thrust = rightTrigger * TOP_SPEED * DRAG_COEFF;
+        const drag   = Math.exp(-DRAG_COEFF * dt);
+        vel[0] = (vel[0] + fwd[0] * thrust * dt) * drag;
+        vel[1] = (vel[1] + fwd[1] * thrust * dt) * drag;
+        vel[2] = (vel[2] + fwd[2] * thrust * dt) * drag;
+
+        // --- Integrate position ---
+        pos[0] += vel[0] * dt;
+        pos[1] += vel[1] * dt;
+        pos[2] += vel[2] * dt;
+
+        // --- HUD ---
         const sec = Math.floor(time / 1000);
         if (sec !== lastFpsSec) {
-            overlay.textContent = `${fpsCount} fps`;
+            const speed = Math.sqrt(vel[0]**2 + vel[1]**2 + vel[2]**2) * 1000;
+            overlay.textContent = `${fpsCount} fps  |  ${speed.toFixed(1)} u/s`;
             fpsCount   = 0;
             lastFpsSec = sec;
         }
 
-        // Upload uniforms
+        // --- Upload uniforms ---
         device.queue.writeBuffer(uniBuf, 0, new Float32Array([
-            cameraX, cameraY, cameraZ,
-            renderW, renderH,
-            0, 0, 0,
+            pos[0],   pos[1],   pos[2],   0,
+            right[0], right[1], right[2], renderW,
+            up[0],    up[1],    up[2],    renderH,
+            fwd[0],   fwd[1],   fwd[2],   0,
         ]));
 
         const enc = device.createCommandEncoder();
 
-        // Compute pass: fill renderTex
         const cp = enc.beginComputePass();
         cp.setPipeline(computePipeline);
         cp.setBindGroup(0, computeBG);
         cp.dispatchWorkgroups(Math.ceil(renderW / 8), Math.ceil(renderH / 8));
         cp.end();
 
-        // Render pass: blit renderTex to canvas
         const rp = enc.beginRenderPass({
             colorAttachments: [{
                 view:       ctx.getCurrentTexture().createView(),
