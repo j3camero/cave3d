@@ -128,7 +128,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 pos -= rayDir * (nh / dh);
             }
             let dist       = length(pos - origin);
-            let brightness = 1.0 / (1.0 + dist * dist);
+            let d2 = dist * dist;
+            let brightness = 1.0 / (1.0 + d2 * d2);
             col = vec4<f32>(brightness, brightness, brightness, 1.0);
             break;
         }
