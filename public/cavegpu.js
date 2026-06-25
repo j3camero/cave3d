@@ -96,56 +96,6 @@ fn noise3(x: f32, y: f32, z: f32) -> f32 {
 
 fn density(p: vec3<f32>) -> f32 { return noise3(p.x, p.y, p.z); }
 
-fn surfaceNormal(p: vec3<f32>) -> vec3<f32> {
-    let e = 0.001;
-    let h = density(p);
-    return vec3<f32>(
-        (density(p + vec3<f32>(e, 0.0, 0.0)) - h) / e,
-        (density(p + vec3<f32>(0.0, e, 0.0)) - h) / e,
-        (density(p + vec3<f32>(0.0, 0.0, e)) - h) / e
-    );
-}
-
-fn hue2rgb(p: f32, q: f32, tIn: f32) -> f32 {
-    var t = tIn;
-    if (t < 0.0) { t += 1.0; }
-    if (t > 1.0) { t -= 1.0; }
-    if (t < 0.16666667) { return p + (q - p) * 6.0 * t; }
-    if (t < 0.5)        { return q; }
-    if (t < 0.66666667) { return p + (q - p) * (0.66666667 - t) * 6.0; }
-    return p;
-}
-
-fn hslToRgb(h: f32) -> vec3<f32> {
-    // s=1, l=0.5 → q=1, p=0
-    let hn = h / 360.0;
-    return vec3<f32>(
-        hue2rgb(0.0, 1.0, hn + 0.33333334),
-        hue2rgb(0.0, 1.0, hn),
-        hue2rgb(0.0, 1.0, hn - 0.33333334)
-    );
-}
-
-fn normalToRainbow(n: vec3<f32>) -> vec3<f32> {
-    // Directions → hues: +Y=0° -Y=60° -X=120° +X=180° +Z=240° -Z=300°
-    let w0 = max(0.0,  n.y);  // Up    → 0°
-    let w1 = max(0.0, -n.y);  // Down  → 60°
-    let w2 = max(0.0, -n.x);  // Left  → 120°
-    let w3 = max(0.0,  n.x);  // Right → 180°
-    let w4 = max(0.0,  n.z);  // Fwd   → 240°
-    let w5 = max(0.0, -n.z);  // Back  → 300°
-    let totalW = w0 + w1 + w2 + w3 + w4 + w5;
-    if (totalW < 1e-6) { return vec3<f32>(0.0); }
-
-    // Circular mean: precomputed sin/cos at 0,60,120,180,240,300 degrees
-    let SQ3H = 0.86602540378;
-    let sumSin = w1*SQ3H + w2*SQ3H - w4*SQ3H - w5*SQ3H;
-    let sumCos = w0 + w1*0.5 - w2*0.5 - w3 - w4*0.5 + w5*0.5;
-
-    var hueDeg = atan2(sumSin, sumCos) * 57.29577951;
-    if (hueDeg < 0.0) { hueDeg += 360.0; }
-    return hslToRgb(hueDeg);
-}
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -179,8 +129,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             let dist       = length(pos - origin);
             let brightness = 1.0 / (1.0 + dist * dist);
-            let normal     = normalize(surfaceNormal(pos));
-            col = vec4<f32>(normalToRainbow(normal) * brightness, 1.0);
+            col = vec4<f32>(brightness, brightness, brightness, 1.0);
             break;
         }
         oldH = h;
