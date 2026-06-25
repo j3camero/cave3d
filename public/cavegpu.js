@@ -96,6 +96,57 @@ fn noise3(x: f32, y: f32, z: f32) -> f32 {
 
 fn density(p: vec3<f32>) -> f32 { return noise3(p.x, p.y, p.z); }
 
+fn rockColor(p: vec3<f32>) -> vec3<f32> {
+    // Three octaves of texture noise at frequencies much higher than the cave shape.
+    // Shape noise is at freq ~1.0; texture uses 6x–40x to get rocky grain.
+    let n1 = noise3(p.x *  6.0,          p.y *  6.0,          p.z *  6.0);
+    let n2 = noise3(p.x * 16.0 + 17.3,   p.y * 16.0 + 31.1,   p.z * 16.0 +  7.7);
+    let n3 = noise3(p.x * 40.0 + 53.7,   p.y * 40.0 + 61.3,   p.z * 40.0 + 41.9);
+
+    // FBM-style blend mapped to [0,1] for base lightness
+    let t = clamp((n1 * 0.50 + n2 * 0.32 + n3 * 0.18) * 0.7 + 0.5, 0.0, 1.0);
+
+    // Second independent channel (large coordinate offset) drives mineral-patch color
+    let m = clamp(noise3(p.x * 7.0 + 100.0, p.y * 7.0 + 200.0, p.z * 7.0 + 150.0) * 0.5 + 0.5, 0.0, 1.0);
+
+    // Earthy rock palette
+    let black     = vec3<f32>(0.05, 0.04, 0.04);
+    let darkGray  = vec3<f32>(0.20, 0.18, 0.17);
+    let coolGray  = vec3<f32>(0.40, 0.37, 0.34);
+    let warmGray  = vec3<f32>(0.56, 0.52, 0.47);
+    let brown     = vec3<f32>(0.38, 0.25, 0.13);
+    let ochre     = vec3<f32>(0.56, 0.42, 0.20);
+    let sandstone = vec3<f32>(0.68, 0.56, 0.40);
+    let limestone = vec3<f32>(0.84, 0.81, 0.76);
+
+    // Base: gradient through grays from dark crevices to pale highlights
+    var base: vec3<f32>;
+    if (t < 0.20) {
+        base = mix(black,    darkGray, t * 5.0);
+    } else if (t < 0.50) {
+        base = mix(darkGray, coolGray, (t - 0.20) * 3.33);
+    } else if (t < 0.78) {
+        base = mix(coolGray, warmGray, (t - 0.50) * 3.57);
+    } else {
+        base = mix(warmGray, limestone, (t - 0.78) * 4.55);
+    }
+
+    // Mineral patches: earthy browns, ochres, sandstone
+    var mineral: vec3<f32>;
+    if (m < 0.40) {
+        mineral = mix(brown,     ochre,     m * 2.5);
+    } else if (m < 0.70) {
+        mineral = mix(ochre,     sandstone, (m - 0.40) * 3.33);
+    } else {
+        mineral = mix(sandstone, limestone, (m - 0.70) * 3.33);
+    }
+
+    // Patch extent driven by a low-frequency noise blob
+    let patchNoise = noise3(p.x * 4.0 + 300.0, p.y * 4.0 + 400.0, p.z * 4.0 + 350.0);
+    let mineralWeight = clamp(patchNoise * 0.5 + 0.35, 0.0, 0.70);
+    return mix(base, mineral, mineralWeight);
+}
+
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -130,7 +181,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let dist       = length(pos - origin);
             let d2 = dist * dist;
             let brightness = 1.0 / (1.0 + d2 * d2);
-            col = vec4<f32>(brightness, brightness, brightness, 1.0);
+            let rockCol = rockColor(pos);
+            col = vec4<f32>(rockCol * brightness, 1.0);
             break;
         }
         oldH = h;
